@@ -43,8 +43,8 @@ With the source code in hand we can get a much better idea of what's happening h
 First we need to know why things crash when we pass in large ASCII decimals, but first we need to explain how **`dtoa`** manages its memory.  
 And yes, **`dtoa`** is the one managing its memory.  
 **`dtoa`** needs to expand the ASCII decimal given to its full value to be able to perform the necessary math and ensure correctness.  
-To do this it allocs large structs call `Bigint`s, these blocks are stored in a linked list based on the size of the decimal they can hold. (The sizes are in powers of 2)  
-The format of a Bigint is given on line 463 and looks like this:
+To do this it allocs large structs called `Bigint`, these blocks are stored in a linked list based on the size of the decimal they can hold. (The sizes are in powers of 2)  
+The format of a `Bigint` is given on line 463 and looks like this:
 
 ```c
 struct Bigint {
@@ -55,14 +55,14 @@ struct Bigint {
 ```
 
 You can see the next variable which will be a pointer to the next free `Bigint` in the list when not in use, the `k` variable which indicates how big of a number can be stored in it, the `maxwds`, `sign`, and `wds` which are used to keep track of how many words of data represent the number as well as its sign, and finally the actual number follows in the array `x`.  
-So now we know how numbers are stored we need to see how these `Bigint`s are kept when not in use.
-You can see on line 471 that an array of `Bigint`s is declared called `freelist` and is given a size of `Kmax + 1`, `Kmax` is defined to be `15` here so that means there are `16` slots for `Bigint`s to occupy.  
-Each index in the array points to the first `Bigint` in the linked list of free `Bigint`s of size `k`.
+So now we know how numbers are stored we need to see how these `Bigint` are kept when not in use.
+You can see on line 471 that an array of `Bigint` is declared called `freelist` and is given a size of `Kmax + 1`, `Kmax` is defined to be `15` here so that means there are `16` slots for `Bigint` to occupy.  
+Each index in the array points to the first `Bigint` in the linked list of free `Bigint` of size `k`.
 
 
 `Kmax` is used to indicate what the maximum `k` value a number can be before the library can't handle it.
 When getting these `Bigint`, **`dtoa`** uses a wrapper function called `Bmalloc`.
-`Bmalloc` takes an int `k` and checks to see if there are any free `Bigint`s in the `freelist` of size `k` by simply checking `freelist[k]` for a pointer and if not it allocs one with `malloc` as normal.
+`Bmalloc` takes an int `k` and checks to see if there are any free `Bigint` in the `freelist` of size `k` by simply checking `freelist[k]` for a pointer and if not it allocs one with `malloc` as normal.
 
 
 ### So what happens if we pass in a number that results in `k` being above `Kmax`?
@@ -71,17 +71,17 @@ Well, things go wrong.
 When you index past the end of an array, you will get whatever is in memory directly after it.  
 Luckily for us, `freelist` is stored in the `bss` section since it's a global variable and therefore the next global variable is probably what the compiler decided to put after `freelist`.  
 This turns out to be correct and the next global variable in **`dtoa`** is the `p5s` array which is used by `pow5mult`.  
-So what is in `p5s`? It's more pointers to `Bigint` actually. But very critically, it's pointers to `Bigint`s of a much smaller size (2 in this case).
+So what is in `p5s`? It's more pointers to `Bigint` actually. But very critically, it's pointers to `Bigint` of a much smaller size (2 in this case).
 So, when asked for a `Bigint` of size `Kmax + 1`, instead you get back a `Bigint` of size 2. Oops!
 
 Unfortunately **`dtoa`** is quite complicated, so I've only traced a small step of events that lead to the buffer overflow.  
-When attempting to diff two large `Bigint`s, **`diff`** tries to allocate a return `Bigint` that will be passed back. This return bigint attempts to allocate a `k` of size 17 which is one above the maximum and thus accidentally grabs from `p5s` which at the time has a `Bigint` of size 2 sitting in it.  
+When attempting to diff two large `Bigint`, **`diff`** tries to allocate a return `Bigint` that will be passed back. This return `Bigint` attempts to allocate a `k` of size 17 which is one above the maximum and thus accidentally grabs from `p5s` which at the time has a `Bigint` of size 2 sitting in it.  
 **`diff`** then effectively copies ~50K of the decimal passed to it into the smaller `Bigint`. (Actually it is a **`diff`** of our original decimal and a small decimal. I can't seem to figure out it's meaning.) (Also it copies much more than 50K but that's all that's usable before it starts hitting the smaller decimal and things stop being predictable.)  
 So that means that ~50K of our decimal ends up smashing through the much smaller `Bigint` (only allocated to something like `0x20` bytes), and we can control all 50K.
 
 So now we need to figure out what to overwrite with our 50K of data.  
 Unfortunately it's too big of an overwrite to ever return back to JavaScript (you might be able to, but I choose not to), so instead I decided to overwrite another `Bigint` and use its `k` value to get an arbitrary write of.  
-When **`dtoa`** wants to "free" a `Bigint`, it calls a function `Bfree` which actually never frees it but instead adds it to the linked list we saw above. This is how `Bigint`s are recycled.  
+When **`dtoa`** wants to "free" a `Bigint`, it calls a function `Bfree` which actually never frees it but instead adds it to the linked list we saw above. This is how `Bigint` are recycled.  
 To do this it attempts to write a pointer to the `Bigint` to `freelist[v->k]`, which means that it will take `k` from the bigint, multiply it by 4, then add it to the memory location of freelist and write a pointer to the `Bigint` there.  
 Unfortunately it also writes the current value at that address as the next pointer in the `Bigint`, which happens to be the first value.  
 To make matters worse, the next field after `next` happens to be the `k` value, which means our `k` value will be tied to the next value written.  
@@ -109,7 +109,7 @@ uint32_t chain_layout[] = {
 };
 ```
 
-With all this done we can now just insert a relative instruction in the `maxwds` field, safely slide down the chain of jump instructions (several fake `Bigint`s were created in case we don't align things properly with heap feng shui) until we hit our payload.
+With all this done we can now just insert a relative instruction in the `maxwds` field, safely slide down the chain of jump instructions (several fake `Bigint` were created in case we don't align things properly with heap feng shui) until we hit our payload.
 
 In this case the payload is [**`savezelda`**][savezelda] that has had SD/gecko support removed and really just serves as an egg hunter for a bigger payload downloaded in memory.  
 Due to browser memory restrictions, the whole page can't be very big (~512K), and we already take up quite a bit with the ASCII decimal.  
